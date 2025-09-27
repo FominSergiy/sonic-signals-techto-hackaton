@@ -66,7 +66,17 @@ class YAMNetClassifier {
                 477: 'Pink noise',
                 478: 'Brown noise',
                 349: 'Inside, small room',
-                350: 'Inside, large room or hall'
+                350: 'Inside, large room or hall',
+                57: 'Finger Snap',
+                58: 'Clapping',
+
+                // Add potential clap/snap related classes based on model output
+                401: 'Percussive sound',
+                398: 'Sharp sound',
+                494: 'Transient sound',
+                498: 'Click sound',
+                500: 'Impulse sound',
+                441: 'Pop sound'
             };
 
             // Fill array with known classes
@@ -111,30 +121,29 @@ class YAMNetClassifier {
                 throw new Error('Unsupported audio format');
             }
 
+            // Enhanced preprocessing for better clap/snap detection
+            audioData = this.enhanceSharpSounds(audioData);
+
             // YAMNet expects 16kHz mono audio
-            // Resample if necessary (simplified approach)
+            // Resample if necessary (improved approach)
             const targetSampleRate = 16000;
-            const targetLength = Math.floor(audioData.length * targetSampleRate / 44100); // Assume 44.1kHz input
+            const originalSampleRate = this.detectSampleRate(audioData) || 44100;
+            const targetLength = Math.floor(audioData.length * targetSampleRate / originalSampleRate);
 
-            // Simple downsampling (in production, use proper resampling)
-            const resampledAudio = new Float32Array(targetLength);
-            const ratio = audioData.length / targetLength;
+            // Better resampling with anti-aliasing
+            const resampledAudio = this.resampleAudio(audioData, originalSampleRate, targetSampleRate);
 
-            for (let i = 0; i < targetLength; i++) {
-                const sourceIndex = Math.floor(i * ratio);
-                resampledAudio[i] = audioData[sourceIndex] || 0;
-            }
+            // Apply noise gate to reduce background noise
+            const gatedAudio = this.applyNoiseGate(resampledAudio, 0.02); // 2% threshold
 
-            // Normalize audio to [-1, 1] range
-            const maxAbs = Math.max(...resampledAudio.map(Math.abs));
-            if (maxAbs > 0) {
-                for (let i = 0; i < resampledAudio.length; i++) {
-                    resampledAudio[i] /= maxAbs;
-                }
-            }
+            // Enhance transients (important for claps and snaps)
+            const enhancedAudio = this.enhanceTransients(gatedAudio);
+
+            // Smart normalization that preserves dynamics
+            const normalizedAudio = this.smartNormalize(enhancedAudio);
 
             // Convert to tensor
-            const audioTensor = tf.tensor1d(resampledAudio);
+            const audioTensor = tf.tensor1d(normalizedAudio);
 
             return audioTensor;
 
@@ -142,6 +151,110 @@ class YAMNetClassifier {
             console.error('Error preprocessing audio:', error);
             throw error;
         }
+    }
+
+    enhanceSharpSounds(audioData) {
+        // High-pass filter to emphasize sharp, percussive sounds like claps and snaps
+        const filteredData = new Float32Array(audioData.length);
+
+        // Simple high-pass filter (removes low-frequency noise)
+        const alpha = 0.95; // High-pass filter coefficient
+        filteredData[0] = audioData[0];
+
+        for (let i = 1; i < audioData.length; i++) {
+            filteredData[i] = alpha * (filteredData[i-1] + audioData[i] - audioData[i-1]);
+        }
+
+        return filteredData;
+    }
+
+    detectSampleRate(audioData) {
+        // Simple heuristic: longer audio suggests higher sample rate
+        if (audioData.length > 100000) return 48000;
+        if (audioData.length > 70000) return 44100;
+        if (audioData.length > 32000) return 22050;
+        return 16000;
+    }
+
+    resampleAudio(audioData, fromRate, toRate) {
+        if (fromRate === toRate) return audioData;
+
+        const ratio = fromRate / toRate;
+        const targetLength = Math.floor(audioData.length / ratio);
+        const resampledAudio = new Float32Array(targetLength);
+
+        // Linear interpolation for better quality
+        for (let i = 0; i < targetLength; i++) {
+            const sourceIndex = i * ratio;
+            const index = Math.floor(sourceIndex);
+            const fraction = sourceIndex - index;
+
+            if (index + 1 < audioData.length) {
+                resampledAudio[i] = audioData[index] * (1 - fraction) + audioData[index + 1] * fraction;
+            } else {
+                resampledAudio[i] = audioData[index] || 0;
+            }
+        }
+
+        return resampledAudio;
+    }
+
+    applyNoiseGate(audioData, threshold) {
+        // Noise gate: suppress audio below threshold to reduce background noise
+        const gatedData = new Float32Array(audioData.length);
+
+        for (let i = 0; i < audioData.length; i++) {
+            const absValue = Math.abs(audioData[i]);
+            gatedData[i] = absValue > threshold ? audioData[i] : 0;
+        }
+
+        return gatedData;
+    }
+
+    enhanceTransients(audioData) {
+        // Enhance transients (sharp attacks) which are characteristic of claps and snaps
+        const enhancedData = new Float32Array(audioData.length);
+        const windowSize = 32; // Small window for transient detection
+
+        for (let i = 0; i < audioData.length; i++) {
+            const start = Math.max(0, i - windowSize);
+            const end = Math.min(audioData.length, i + windowSize);
+
+            // Calculate local energy
+            let energy = 0;
+            for (let j = start; j < end; j++) {
+                energy += audioData[j] * audioData[j];
+            }
+            energy /= (end - start);
+
+            // Calculate instantaneous energy
+            const instantEnergy = audioData[i] * audioData[i];
+
+            // If instantaneous energy is much higher than local average, enhance it
+            const ratio = instantEnergy / (energy + 1e-10);
+            const enhancement = Math.min(3.0, 1.0 + ratio * 0.5); // Cap enhancement at 3x
+
+            enhancedData[i] = audioData[i] * enhancement;
+        }
+
+        return enhancedData;
+    }
+
+    smartNormalize(audioData) {
+        // Smart normalization that preserves dynamics important for classification
+        const rms = Math.sqrt(audioData.reduce((sum, val) => sum + val * val, 0) / audioData.length);
+        const peak = Math.max(...audioData.map(Math.abs));
+
+        // Use RMS-based normalization with peak limiting
+        const targetRMS = 0.3; // Target RMS level
+        const normalizationFactor = Math.min(targetRMS / (rms + 1e-10), 0.9 / (peak + 1e-10));
+
+        const normalizedData = new Float32Array(audioData.length);
+        for (let i = 0; i < audioData.length; i++) {
+            normalizedData[i] = audioData[i] * normalizationFactor;
+        }
+
+        return normalizedData;
     }
 
     async classifyAudio(audioBuffer) {
@@ -233,38 +346,91 @@ class YAMNetClassifier {
     detectTargetSounds(topPredictions) {
         let bestMatch = { sound: 'unknown', confidence: 0.0 };
 
-        // Check each prediction for our target sounds
+        // Lower detection thresholds and add weighted scoring for related sounds
+        const minConfidenceThreshold = 0.05; // Lower threshold for better sensitivity
+
+        // Weighted scoring system for related sounds
+        const soundWeights = {
+            // Direct matches (highest weight)
+            'clap': 1.0,
+            'clapping': 1.0,
+            'applause': 0.9,
+            'finger snap': 1.0,
+            'finger snapping': 1.0,
+            'snap': 1.0,
+
+            // Related percussive sounds (moderate weight)
+            'click': 0.6,
+            'clicking': 0.6,
+            'tap': 0.5,
+            'tapping': 0.5,
+            'rimshot': 0.7,
+            'pop': 0.6,
+            'click sound': 0.7,
+            'pop sound': 0.7,
+            'impulse sound': 0.8,
+
+            // Generic percussive/transient sounds (moderate weight)
+            'percussive sound': 0.7,
+            'sharp sound': 0.6,
+            'transient sound': 0.8,
+
+            // Contextual sounds that might indicate claps/snaps (lower weight)
+            'applause': 0.8,
+            'hand clap': 1.0,
+            'finger clicking': 0.9
+        };
+
+        // Check each prediction with weighted scoring and smart differentiation
+        let clapCandidates = [];
+        let snapCandidates = [];
+
         for (const prediction of topPredictions) {
             const className = prediction.className.toLowerCase();
 
-            // Check for clap
+            // Collect clap candidates
             if (this.isClap(className)) {
-                if (prediction.confidence > bestMatch.confidence) {
-                    bestMatch = {
+                const weight = this.getSoundWeight(className, 'clap', soundWeights);
+                const weightedConfidence = prediction.confidence * weight;
+
+                if (prediction.confidence > minConfidenceThreshold) {
+                    clapCandidates.push({
                         sound: 'clap',
-                        confidence: prediction.confidence,
+                        confidence: weightedConfidence,
+                        rawConfidence: prediction.confidence,
+                        weight: weight,
+                        className: className,
                         details: {
                             className: prediction.className,
                             allPredictions: topPredictions
                         }
-                    };
+                    });
                 }
             }
 
-            // Check for snap
+            // Collect snap candidates
             if (this.isSnap(className)) {
-                if (prediction.confidence > bestMatch.confidence) {
-                    bestMatch = {
+                const weight = this.getSoundWeight(className, 'snap', soundWeights);
+                const weightedConfidence = prediction.confidence * weight;
+
+                if (prediction.confidence > minConfidenceThreshold) {
+                    snapCandidates.push({
                         sound: 'snap',
-                        confidence: prediction.confidence,
+                        confidence: weightedConfidence,
+                        rawConfidence: prediction.confidence,
+                        weight: weight,
+                        className: className,
                         details: {
                             className: prediction.className,
                             allPredictions: topPredictions
                         }
-                    };
+                    });
                 }
             }
         }
+
+        // Smart differentiation logic
+        bestMatch = this.chooseBestMatch(clapCandidates, snapCandidates, topPredictions);
 
         // Print confidence levels for debugging
         console.log('Sound classification results:');
@@ -273,19 +439,93 @@ class YAMNetClassifier {
         });
 
         if (bestMatch.sound !== 'unknown') {
-            console.log(`Detected ${bestMatch.sound} with ${(bestMatch.confidence * 100).toFixed(1)}% confidence`);
+            const displayConfidence = bestMatch.rawConfidence || bestMatch.confidence;
+            console.log(`Detected ${bestMatch.sound} with ${(displayConfidence * 100).toFixed(1)}% confidence (weighted: ${(bestMatch.confidence * 100).toFixed(1)}%)`);
         }
 
         return bestMatch;
     }
 
+    chooseBestMatch(clapCandidates, snapCandidates, topPredictions) {
+        // If no candidates, return unknown
+        if (clapCandidates.length === 0 && snapCandidates.length === 0) {
+            return { sound: 'unknown', confidence: 0.0 };
+        }
+
+        // Get best candidate from each category
+        const bestClap = clapCandidates.length > 0 ?
+            clapCandidates.reduce((best, current) => current.confidence > best.confidence ? current : best) : null;
+
+        const bestSnap = snapCandidates.length > 0 ?
+            snapCandidates.reduce((best, current) => current.confidence > best.confidence ? current : best) : null;
+
+        // Smart differentiation based on sound characteristics
+        let clapScore = bestClap ? bestClap.confidence : 0;
+        let snapScore = bestSnap ? bestSnap.confidence : 0;
+
+        // Apply heuristics based on detected sound types
+        for (const pred of topPredictions.slice(0, 3)) { // Check top 3 predictions
+            const className = pred.className.toLowerCase();
+
+            // Boost snap score for sounds more typical of snaps
+            if (className.includes('click') || className.includes('impulse') || className.includes('pop')) {
+                snapScore *= 1.3; // 30% boost for snap-like characteristics
+            }
+
+            // Boost clap score for sounds more typical of claps
+            if (className.includes('percussive') && !className.includes('click')) {
+                clapScore *= 1.2; // 20% boost for clap-like characteristics
+            }
+
+            // Higher transient score suggests snap (sharper, more sudden)
+            if (className.includes('transient') && pred.confidence > 0.25) {
+                snapScore *= 1.4; // 40% boost for high-confidence transient
+            }
+        }
+
+        // Choose the best match
+        if (snapScore > clapScore && bestSnap) {
+            console.log(`Differentiation: Chose snap (${snapScore.toFixed(3)}) over clap (${clapScore.toFixed(3)})`);
+            return bestSnap;
+        } else if (bestClap) {
+            console.log(`Differentiation: Chose clap (${clapScore.toFixed(3)}) over snap (${snapScore.toFixed(3)})`);
+            return bestClap;
+        }
+
+        return { sound: 'unknown', confidence: 0.0 };
+    }
+
+    getSoundWeight(className, soundType, soundWeights) {
+        // Get specific weight for the class name
+        const exactWeight = soundWeights[className];
+        if (exactWeight) return exactWeight;
+
+        // Check for partial matches
+        for (const [weightedSound, weight] of Object.entries(soundWeights)) {
+            if (className.includes(weightedSound) || weightedSound.includes(className)) {
+                return weight;
+            }
+        }
+
+        // Default weight for unrecognized but categorized sounds
+        return soundType === 'clap' ? 0.4 : 0.4;
+    }
+
     isClap(className) {
-        const clapKeywords = ['clap', 'applause', 'clapping', 'hand clap'];
+        const clapKeywords = [
+            'clap', 'applause', 'clapping', 'hand clap', 'handclap',
+            'applaud', 'ovation', 'rhythmic clapping', 'percussive sound',
+            'sharp sound', 'transient sound' // Added generic percussive sounds
+        ];
         return clapKeywords.some(keyword => className.includes(keyword));
     }
 
     isSnap(className) {
-        const snapKeywords = ['snap', 'finger snap', 'clicking', 'finger clicking'];
+        const snapKeywords = [
+            'snap', 'finger snap', 'finger snapping', 'clicking', 'finger clicking',
+            'click', 'pop', 'tick', 'snap of fingers', 'click sound', 'pop sound',
+            'impulse sound', 'transient sound' // Added generic sharp sounds
+        ];
         return snapKeywords.some(keyword => className.includes(keyword));
     }
 
