@@ -1,231 +1,315 @@
-// Audio processing helper for voice command extension
-class AudioProcessor {
-    constructor() {
-      this.sampleRate = 16000;
-      this.bufferSize = 4096;
-      this.analysisWindow = 2048;
-      this.threshold = 0.01;
-    }
-  
-    // Detect audio activity (voice activity detection)
-    detectActivity(audioData) {
-      let sum = 0;
-      let maxAmplitude = 0;
-      
-      for (let i = 0; i < audioData.length; i++) {
-        const abs = Math.abs(audioData[i]);
-        sum += abs;
-        maxAmplitude = Math.max(maxAmplitude, abs);
+// Content script for handling microphone access (Manifest V3 compatible)
+(function() {
+  let isListening = false;
+  let audioContext = null;
+  let mediaRecorder = null;
+  let stream = null;
+  let websocket = null;
+  let audioBuffer = [];
+
+  // Listen for messages from background script
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    handleMessage(message, sender, sendResponse);
+    return true; // Keep message channel open for async response
+  });
+
+  async function handleMessage(message, sender, sendResponse) {
+    try {
+      switch (message.action) {
+        case 'startMicrophone':
+          const startResult = await startMicrophone(message.apiEndpoint);
+          sendResponse(startResult);
+          break;
+
+        case 'stopMicrophone':
+          const stopResult = await stopMicrophone();
+          sendResponse(stopResult);
+          break;
+
+        case 'testMicrophone':
+          const testResult = await testMicrophone(message.duration);
+          sendResponse(testResult);
+          break;
+
+        default:
+          sendResponse({ success: false, error: 'Unknown action' });
       }
-      
-      const average = sum / audioData.length;
-      const hasActivity = average > this.threshold && maxAmplitude > this.threshold * 3;
-      
-      return {
-        hasActivity,
-        averageLevel: average,
-        maxLevel: maxAmplitude,
-        duration: audioData.length / this.sampleRate
-      };
+    } catch (error) {
+      console.error('Error handling message:', error);
+      sendResponse({ success: false, error: error.message });
     }
-  
-    // Extract basic audio features for simple pattern matching
-    extractFeatures(audioData) {
-      const features = {
-        energy: this.calculateEnergy(audioData),
-        zeroCrossingRate: this.calculateZeroCrossingRate(audioData),
-        spectralCentroid: this.calculateSpectralCentroid(audioData),
-        duration: audioData.length / this.sampleRate,
-        peak: this.findPeak(audioData)
-      };
-  
-      // Classify based on features
-      features.classification = this.classifySound(features);
-      
-      return features;
+  }
+
+  async function startMicrophone(apiEndpoint) {
+    if (isListening) {
+      return { success: true, message: 'Already listening' };
     }
-  
-    calculateEnergy(audioData) {
-      let energy = 0;
-      for (let i = 0; i < audioData.length; i++) {
-        energy += audioData[i] * audioData[i];
-      }
-      return energy / audioData.length;
-    }
-  
-    calculateZeroCrossingRate(audioData) {
-      let crossings = 0;
-      for (let i = 1; i < audioData.length; i++) {
-        if ((audioData[i] >= 0) !== (audioData[i - 1] >= 0)) {
-          crossings++;
+
+    try {
+      // Request microphone permission
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: 16000,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true
         }
-      }
-      return crossings / audioData.length;
+      });
+
+      // Set up audio context
+      audioContext = new AudioContext({ sampleRate: 16000 });
+      const source = audioContext.createMediaStreamSource(stream);
+
+      // Set up audio processing
+      setupAudioProcessing(source, apiEndpoint);
+
+      isListening = true;
+
+      // Notify background script
+      chrome.runtime.sendMessage({
+        action: 'microphoneReady'
+      });
+
+      console.log('Microphone access granted and audio processing started');
+      return { success: true, message: 'Microphone started' };
+
+    } catch (error) {
+      console.error('Error starting microphone:', error);
+      await cleanup();
+
+      // Notify background script of error
+      chrome.runtime.sendMessage({
+        action: 'microphoneError',
+        error: error.message
+      });
+
+      return { success: false, error: error.message };
     }
-  
-    calculateSpectralCentroid(audioData) {
-      // Simplified spectral centroid calculation
-      const fft = this.simpleFFT(audioData);
-      let numerator = 0;
-      let denominator = 0;
-      
-      for (let i = 0; i < fft.length / 2; i++) {
-        const magnitude = Math.sqrt(fft[i].real * fft[i].real + fft[i].imag * fft[i].imag);
-        numerator += i * magnitude;
-        denominator += magnitude;
-      }
-      
-      return denominator > 0 ? numerator / denominator : 0;
+  }
+
+  function setupAudioProcessing(source, apiEndpoint) {
+    // Create a script processor for audio analysis
+    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+    processor.onaudioprocess = (event) => {
+      if (!isListening) return;
+
+      const inputData = event.inputBuffer.getChannelData(0);
+      processAudioChunk(inputData, apiEndpoint);
+    };
+
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+
+    window.audioProcessor = processor;
+  }
+
+  function processAudioChunk(audioData, apiEndpoint) {
+    // Add to buffer
+    audioBuffer.push(new Float32Array(audioData));
+
+    // Process buffer every 2 seconds worth of audio
+    const bufferDuration = audioBuffer.length * 4096 / 16000; // seconds
+    if (bufferDuration >= 2.0) {
+      sendAudioToServer(apiEndpoint);
+      audioBuffer = []; // Clear buffer
     }
-  
-    findPeak(audioData) {
-      let maxValue = 0;
-      let peakIndex = 0;
-      
-      for (let i = 0; i < audioData.length; i++) {
-        const abs = Math.abs(audioData[i]);
-        if (abs > maxValue) {
-          maxValue = abs;
-          peakIndex = i;
+  }
+
+  async function sendAudioToServer(apiEndpoint) {
+    if (audioBuffer.length === 0) return;
+
+    try {
+      // Combine audio chunks
+      const totalLength = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+      const combinedAudio = new Float32Array(totalLength);
+
+      let offset = 0;
+      for (const chunk of audioBuffer) {
+        combinedAudio.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      // Convert to WAV format
+      const audioBlob = audioDataToWav(combinedAudio, 16000);
+
+      // Connect to WebSocket if not connected
+      if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+        await connectToServer(apiEndpoint);
+      }
+
+      // Send audio data
+      if (websocket && websocket.readyState === WebSocket.OPEN) {
+        websocket.send(audioBlob);
+      }
+
+    } catch (error) {
+      console.error('Error sending audio to server:', error);
+    }
+  }
+
+  async function connectToServer(apiEndpoint) {
+    return new Promise((resolve, reject) => {
+      try {
+        websocket = new WebSocket(apiEndpoint);
+
+        websocket.onopen = () => {
+          console.log('Connected to audio classification server');
+          resolve();
+        };
+
+        websocket.onmessage = (event) => {
+          try {
+            const result = JSON.parse(event.data);
+            console.log('Audio classification result:', result);
+
+            // Forward result to background script
+            chrome.runtime.sendMessage({
+              action: 'classificationResult',
+              result: result
+            });
+
+          } catch (error) {
+            console.error('Error processing server response:', error);
+          }
+        };
+
+        websocket.onerror = (error) => {
+          console.error('WebSocket error:', error);
+          reject(error);
+        };
+
+        websocket.onclose = () => {
+          console.log('WebSocket connection closed');
+          websocket = null;
+        };
+
+      } catch (error) {
+        console.error('Error connecting to server:', error);
+        reject(error);
+      }
+    });
+  }
+
+  async function stopMicrophone() {
+    if (!isListening) {
+      return { success: true, message: 'Not listening' };
+    }
+
+    await cleanup();
+    return { success: true, message: 'Microphone stopped' };
+  }
+
+  async function testMicrophone(duration = 5000) {
+    if (!isListening) {
+      return { success: false, error: 'Microphone not active' };
+    }
+
+    console.log(`Starting ${duration}ms microphone test...`);
+
+    // Collect audio for test duration
+    const testBuffer = [];
+    const originalProcessing = processAudioChunk;
+
+    processAudioChunk = (audioData) => {
+      testBuffer.push(new Float32Array(audioData));
+    };
+
+    setTimeout(() => {
+      processAudioChunk = originalProcessing;
+
+      if (testBuffer.length > 0) {
+        console.log(`Test collected ${testBuffer.length} audio chunks`);
+
+        // Combine and analyze test audio
+        const totalLength = testBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+        const combinedAudio = new Float32Array(totalLength);
+
+        let offset = 0;
+        for (const chunk of testBuffer) {
+          combinedAudio.set(chunk, offset);
+          offset += chunk.length;
         }
-      }
-      
-      return {
-        value: maxValue,
-        position: peakIndex / audioData.length,
-        time: peakIndex / this.sampleRate
-      };
-    }
-  
-    // Simple FFT implementation for basic frequency analysis
-    simpleFFT(audioData) {
-      const N = audioData.length;
-      const result = [];
-      
-      for (let k = 0; k < N; k++) {
-        let real = 0;
-        let imag = 0;
-        
-        for (let n = 0; n < N; n++) {
-          const angle = -2 * Math.PI * k * n / N;
-          real += audioData[n] * Math.cos(angle);
-          imag += audioData[n] * Math.sin(angle);
-        }
-        
-        result.push({ real, imag });
-      }
-      
-      return result;
-    }
-  
-    // Basic sound classification based on features
-    classifySound(features) {
-      const { energy, zeroCrossingRate, spectralCentroid, duration, peak } = features;
-      
-      // Simple heuristic classification
-      if (duration < 0.2 && energy > 0.001 && peak.value > 0.1) {
-        if (zeroCrossingRate > 0.1) {
-          return 'click'; // Like finger snap or tongue click
-        } else {
-          return 'thump'; // Like hand clap
-        }
-      } else if (duration > 0.3 && duration < 1.5) {
-        if (spectralCentroid > 50 && zeroCrossingRate > 0.05) {
-          return 'whistle'; // Whistle-like sound
-        } else if (energy > 0.0005) {
-          return 'voice'; // Voice command
-        }
-      } else if (duration < 0.1 && energy > 0.002) {
-        return 'pop'; // Very short sharp sound
-      }
-      
-      return 'unknown';
-    }
-  
-    // Match extracted features against known command patterns
-    matchCommand(features, commandPatterns) {
-      let bestMatch = null;
-      let bestScore = 0;
-      
-      for (const pattern of commandPatterns) {
-        const score = this.calculateMatchScore(features, pattern);
-        if (score > bestScore && score > 0.6) { // Threshold for matching
-          bestScore = score;
-          bestMatch = pattern;
-        }
-      }
-      
-      return bestMatch ? {
-        command: bestMatch.action,
-        confidence: bestScore,
-        pattern: bestMatch
-      } : null;
-    }
-  
-    calculateMatchScore(features, pattern) {
-      // Simple scoring based on feature similarity
-      let score = 0;
-      let weights = 0;
-      
-      // Duration matching
-      if (pattern.expectedDuration) {
-        const durationDiff = Math.abs(features.duration - pattern.expectedDuration);
-        const durationScore = Math.max(0, 1 - (durationDiff / pattern.expectedDuration));
-        score += durationScore * 0.3;
-        weights += 0.3;
-      }
-      
-      // Energy matching
-      if (pattern.expectedEnergy) {
-        const energyRatio = Math.min(features.energy, pattern.expectedEnergy) / 
-                           Math.max(features.energy, pattern.expectedEnergy);
-        score += energyRatio * 0.25;
-        weights += 0.25;
-      }
-      
-      // Classification matching
-      if (pattern.expectedClassification && features.classification === pattern.expectedClassification) {
-        score += 0.45;
-        weights += 0.45;
-      }
-      
-      return weights > 0 ? score / weights : 0;
-    }
-  
-    // Create a command pattern from recorded audio
-    createPattern(audioData, commandName, action) {
-      const features = this.extractFeatures(audioData);
-      
-      return {
-        name: commandName,
-        action: action,
-        expectedDuration: features.duration,
-        expectedEnergy: features.energy,
-        expectedClassification: features.classification,
-        expectedZeroCrossingRate: features.zeroCrossingRate,
-        expectedSpectralCentroid: features.spectralCentroid,
-        createdAt: Date.now()
-      };
-    }
-  
-    // Process audio in real-time chunks
-    processRealTimeAudio(audioChunk, callback) {
-      const activity = this.detectActivity(audioChunk);
-      
-      if (activity.hasActivity) {
-        const features = this.extractFeatures(audioChunk);
-        callback({
-          type: 'activity',
-          features: features,
-          activity: activity
+
+        // Basic analysis
+        const avgAmplitude = combinedAudio.reduce((sum, val) => sum + Math.abs(val), 0) / combinedAudio.length;
+        const maxAmplitude = Math.max(...combinedAudio.map(Math.abs));
+
+        console.log('Test results:', {
+          duration: duration,
+          avgAmplitude,
+          maxAmplitude,
+          hasActivity: avgAmplitude > 0.01
         });
       }
+    }, duration);
+
+    return { success: true, message: 'Test started' };
+  }
+
+  async function cleanup() {
+    isListening = false;
+
+    if (window.audioProcessor) {
+      window.audioProcessor.disconnect();
+      window.audioProcessor = null;
     }
+
+    if (audioContext) {
+      await audioContext.close();
+      audioContext = null;
+    }
+
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    }
+
+    if (websocket) {
+      websocket.close();
+      websocket = null;
+    }
+
+    audioBuffer = [];
   }
-  
-  // Export for use in background script
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = AudioProcessor;
-  } else {
-    window.AudioProcessor = AudioProcessor;
+
+  function audioDataToWav(audioData, sampleRate) {
+    const buffer = new ArrayBuffer(44 + audioData.length * 2);
+    const view = new DataView(buffer);
+
+    // WAV header
+    const writeString = (offset, string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + audioData.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, audioData.length * 2, true);
+
+    // Convert float32 to int16
+    let offset = 44;
+    for (let i = 0; i < audioData.length; i++) {
+      const sample = Math.max(-1, Math.min(1, audioData[i]));
+      view.setInt16(offset, sample * 0x7FFF, true);
+      offset += 2;
+    }
+
+    return new Blob([buffer], { type: 'audio/wav' });
   }
+
+  // Handle page unload
+  window.addEventListener('beforeunload', cleanup);
+
+})();
