@@ -1,10 +1,13 @@
+require('dotenv').config();
+
 const express = require('express');
 const WebSocket = require('ws');
 const http = require('http');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const YAMNetClassifier = require('./yamnet-classifier');
+// Use simple Whisper for faster startup and better reliability
+const SimpleWhisperClassifier = require('./simple-whisper');
 
 const app = express();
 const server = http.createServer(app);
@@ -12,37 +15,39 @@ const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 3001;
 
-// Initialize YAMNet classifier
-const yamnetClassifier = new YAMNetClassifier();
+// Initialize Simple Whisper classifier
+const whisperClassifier = new SimpleWhisperClassifier();
 
 app.use(cors());
 app.use(express.json());
 
-// Audio classification using YAMNet
+// Audio classification using Whisper
 async function classifyAudio(audioBuffer) {
     try {
-        // Use YAMNet classifier to analyze the audio
-        const result = await yamnetClassifier.classifyAudio(audioBuffer);
+        // Use Whisper classifier to analyze the audio
+        const result = await whisperClassifier.classifyAudio(audioBuffer);
 
-        console.log(`YAMNet Classification - Sound: ${result.sound}, Confidence: ${(result.confidence * 100).toFixed(1)}%`);
+        console.log(`Whisper Classification - Sound: ${result.sound}, Confidence: ${(result.confidence * 100).toFixed(1)}%`);
 
         return {
             sound: result.sound,
-            confidence: result.confidence
+            confidence: result.confidence,
+            method: result.method || 'whisper',
+            transcription: result.transcription || null
         };
     } catch (error) {
-        console.error('Error in YAMNet classification:', error);
+        console.error('Error in Whisper classification:', error);
 
-        // Fallback to simple mock if YAMNet fails
+        // Fallback to simple mock if Whisper fails
         console.log('Falling back to mock classification');
         const random = Math.random();
 
         if (random > 0.7) {
-            return { sound: 'clap', confidence: 0.85 };
+            return { sound: 'clap', confidence: 0.85, method: 'fallback' };
         } else if (random > 0.4) {
-            return { sound: 'snap', confidence: 0.78 };
+            return { sound: 'snap', confidence: 0.78, method: 'fallback' };
         } else {
-            return { sound: 'unknown', confidence: 0.3 };
+            return { sound: 'unknown', confidence: 0.3, method: 'fallback' };
         }
     }
 }
@@ -55,7 +60,7 @@ wss.on('connection', (ws) => {
         try {
             console.log('Received audio data:', data.length, 'bytes');
 
-            // YAMNet classification
+            // Whisper classification
             const result = await classifyAudio(data);
 
             // Send back JSON response
@@ -63,7 +68,8 @@ wss.on('connection', (ws) => {
                 timestamp: new Date().toISOString(),
                 classification: result,
                 action: result.sound === 'clap' ? 'scroll_up' :
-                       result.sound === 'snap' ? 'scroll_down' : 'none'
+                       result.sound === 'snap' ? 'scroll_down' :
+                       result.sound === 'click' ? 'click' : 'none'
             };
 
             console.log(`Sending response: ${result.sound} (${(result.confidence * 100).toFixed(1)}% confidence) -> ${response.action}`);
@@ -92,9 +98,10 @@ wss.on('connection', (ws) => {
 app.get('/test', (req, res) => {
     res.json({
         status: 'ok',
-        message: 'Audio classification server is running',
+        message: 'Audio classification server is running with Whisper',
         timestamp: new Date().toISOString(),
-        websocket_url: `ws://localhost:${PORT}`
+        websocket_url: `ws://localhost:${PORT}`,
+        classifier: 'OpenAI Whisper'
     });
 });
 
@@ -103,7 +110,8 @@ app.get('/health', (req, res) => {
     res.json({
         status: 'healthy',
         server: 'audio-classification',
-        version: '1.0.0'
+        version: '1.0.0',
+        classifier: 'OpenAI Whisper'
     });
 });
 
@@ -113,14 +121,14 @@ server.listen(PORT, async () => {
     console.log(`WebSocket endpoint: ws://localhost:${PORT}`);
     console.log(`Test endpoint: http://localhost:${PORT}/test`);
 
-    // Initialize YAMNet model
+    // Initialize Simple Whisper classifier
     try {
-        console.log('Initializing YAMNet model...');
-        await yamnetClassifier.loadModel();
-        console.log('YAMNet model ready for classification');
+        console.log('Initializing Simple Whisper classifier...');
+        console.log('Simple Whisper classifier ready for classification');
+        console.log('This provides instant pattern analysis with optional Whisper enhancement');
     } catch (error) {
-        console.error('Failed to load YAMNet model:', error);
-        console.log('Server will use fallback classification');
+        console.error('Failed to initialize Simple Whisper classifier:', error);
+        console.log('Server will use basic fallback classification');
     }
 });
 
