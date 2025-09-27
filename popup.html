@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 300px;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+    }
+    
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    
+    .toggle-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 15px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+    }
+    
+    .toggle-switch {
+      position: relative;
+      width: 60px;
+      height: 30px;
+    }
+    
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      transition: .4s;
+      border-radius: 30px;
+    }
+    
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 22px;
+      width: 22px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      transition: .4s;
+      border-radius: 50%;
+    }
+    
+    input:checked + .slider {
+      background-color: #4CAF50;
+    }
+    
+    input:checked + .slider:before {
+      transform: translateX(30px);
+    }
+    
+    .status {
+      text-align: center;
+      margin: 15px 0;
+      padding: 8px;
+      border-radius: 3px;
+      font-size: 14px;
+    }
+    
+    .status.active {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    
+    .status.inactive {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+    
+    .button {
+      width: 100%;
+      padding: 10px;
+      margin: 5px 0;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    
+    .button:hover {
+      background-color: #0056b3;
+    }
+    
+    .commands-list {
+      margin-top: 15px;
+      padding: 10px;
+      background-color: #f8f9fa;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+    
+    .commands-list h4 {
+      margin: 0 0 10px 0;
+      color: #333;
+    }
+    
+    .command-item {
+      margin: 5px 0;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h3>🎤 Voice Commands</h3>
+  </div>
+  
+  <div class="toggle-container">
+    <span>Microphone Access:</span>
+    <label class="toggle-switch">
+      <input type="checkbox" id="micToggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+  
+  <div id="status" class="status inactive">
+    Microphone Inactive
+  </div>
+  
+  <button class="button" id="optionsBtn">Configure Commands</button>
+  <button class="button" id="testBtn">Test Recognition</button>
+  
+  <div class="commands-list">
+    <h4>Available Commands:</h4>
+    <div id="commandsList">
+      Loading commands...
+    </div>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
