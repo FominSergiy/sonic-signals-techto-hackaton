@@ -634,6 +634,20 @@
   resolved "https://registry.yarnpkg.com/@tensorflow/tfjs-layers/-/tfjs-layers-4.22.0.tgz#b3a3608da222203c01698d1285e6f221c6d12207"
   integrity sha512-lybPj4ZNj9iIAPUj7a8ZW1hg8KQGfqWLlCZDi9eM/oNKCCAgchiyzx8OrYoWmRrB+AM6VNEeIT+2gZKg5ReihA==
 
+"@tensorflow/tfjs-node-gpu@^4.22.0":
+  version "4.22.0"
+  resolved "https://registry.yarnpkg.com/@tensorflow/tfjs-node-gpu/-/tfjs-node-gpu-4.22.0.tgz#059c4a402f52300604f6798f4f2c903bd7b3fad2"
+  integrity sha512-p//NN6DGiN4hInUmIkRffaFVMcdTREUMjPyjW04J7OXvB2zBlQimj61eFKSgRrH3f5TnOfKzb0n56he/B6a4bw==
+  dependencies:
+    "@mapbox/node-pre-gyp" "1.0.9"
+    "@tensorflow/tfjs" "4.22.0"
+    adm-zip "^0.5.2"
+    google-protobuf "^3.9.2"
+    https-proxy-agent "^2.2.1"
+    progress "^2.0.0"
+    rimraf "^2.6.2"
+    tar "^6.2.1"
+
 "@tensorflow/tfjs-node@^4.22.0":
   version "4.22.0"
   resolved "https://registry.yarnpkg.com/@tensorflow/tfjs-node/-/tfjs-node-4.22.0.tgz#9883605202424e993b6c7cc4dedfd9282634567c"
@@ -2907,6 +2921,11 @@ node-releases@^2.0.21:
   version "2.0.21"
   resolved "https://registry.yarnpkg.com/node-releases/-/node-releases-2.0.21.tgz#f59b018bc0048044be2d4c4c04e4c8b18160894c"
   integrity sha512-5b0pgg78U3hwXkCM8Z9b2FJdPZlr9Psr9V2gQPESdGHqbntyFJKFW4r5TeWGFzafGY3hzs1JC62VEQMbl1JFkw==
+
+node-wav@^0.0.2:
+  version "0.0.2"
+  resolved "https://registry.yarnpkg.com/node-wav/-/node-wav-0.0.2.tgz#89cb63cf8cd66ec8ab455f5ba4864e5fcb4605e8"
+  integrity sha512-M6Rm/bbG6De/gKGxOpeOobx/dnGuP0dz40adqx38boqHhlWssBJZgLCPBNtb9NkrmnKYiV04xELq+R6PFOnoLA==
 
 nodemon@^3.0.1:
   version "3.1.10"
